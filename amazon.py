@@ -55,15 +55,47 @@ st.line_chart(df.set_index("Date")["Close"], use_container_width=True)
 n_days = st.number_input("Masukkan jumlah hari prediksi:", min_value=1, max_value=365, value=60)
 
 if st.button("Prediksi"):
-    close_data = df["Close"].values
-    future_preds = predict_future(close_data, n_days, model)
+    # Set indeks ke DateTime
+    df.index = pd.to_datetime(df['Date'])
 
-    last_date = df["Date"].iloc[-1]
-    future_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=n_days)
+    # Data historis (actual)
+    df_past = df[['Close']].copy()
+    df_past['Forecast'] = np.nan
+    df_past.rename(columns={'Close': 'Actual'}, inplace=True)
 
-    pred_df = pd.DataFrame({"Date": future_dates, "Predicted Price": future_preds})
-    pred_df.set_index("Date", inplace=True)
+    # Jalankan prediksi
+    close_data = df_past['Actual'].values
+    forecast = predict_future(close_data, n_days, model)
 
-    st.line_chart(pred_df, use_container_width=True)
-    st.dataframe(pred_df)
+    # Isi nilai prediksi pertama agar menyatu mulus
+    df_past.loc[df_past.index[-1], 'Forecast'] = df_past.loc[df_past.index[-1], 'Actual']
 
+    # Buat tanggal untuk prediksi
+    future_dates = pd.date_range(start=df_past.index[-1] + pd.Timedelta(days=1), periods=n_days)
+
+    # Buat DataFrame prediksi masa depan
+    df_future = pd.DataFrame({
+        'Actual': [np.nan] * n_days,
+        'Forecast': forecast
+    }, index=future_dates)
+
+    # Gabungkan historis dan prediksi
+    results = pd.concat([df_past, df_future])
+
+    # Plot dengan matplotlib
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(results.index, results['Actual'], label='Harga Historis')
+    ax.plot(results.index, results['Forecast'], label=f'Prediksi {n_days} Hari', color='orange')
+    ax.set_title(f'Forecast Saham {n_days} Hari')
+    ax.set_xlabel('Tanggal')
+    ax.set_ylabel('Harga')
+    ax.legend()
+    ax.grid(True)
+    plt.tight_layout()
+
+    # Tampilkan di Streamlit
+    st.pyplot(fig)
+
+    # Tampilkan tabel hasil forecast
+    st.subheader("📋 Hasil Prediksi")
+    st.dataframe(df_future.reset_index().rename(columns={'index': 'Date'}))
