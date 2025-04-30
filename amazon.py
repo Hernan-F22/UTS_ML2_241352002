@@ -1,70 +1,69 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
+import tensorflow as tf
+from tensorflow.lite.python.interpreter import Interpreter
+from sklearn.preprocessing import MinMaxScaler
 
-st.set_page_config(layout="wide")
-st.title("📊 Amazon Stock Price EDA (1997–2020)")
-
-# Upload file CSV
-uploaded_file = st.file_uploader("Upload dataset (CSV)", type=["csv"])
-
-if uploaded_file is not None:
-    # Baca data
-    df = pd.read_csv(uploaded_file)
-    
-    # Pastikan kolom Date dalam format datetime
+# --- Load Dataset ---
+@st.cache_data
+def load_data():
+    df = pd.read_csv("Amazon.csv")
     df['Date'] = pd.to_datetime(df['Date'])
+    df = df.sort_values("Date")
+    return df[['Date', 'Close']]
 
-    # Sidebar: pilih rentang waktu
-    st.sidebar.title("Filter Data")
-    start_date = st.sidebar.date_input("Start Date", df['Date'].min().date())
-    end_date = st.sidebar.date_input("End Date", df['Date'].max().date())
-    
-    # Filter data berdasarkan tanggal
-    mask = (df['Date'] >= pd.to_datetime(start_date)) & (df['Date'] <= pd.to_datetime(end_date))
-    df = df.loc[mask]
+# --- Load TFLite Model ---
+@st.cache_resource
+def load_model():
+    interpreter = Interpreter(model_path="amazon_stock_price.tflite")
+    interpreter.allocate_tensors()
+    return interpreter
 
-    st.markdown("## 📈 Close Price Over Time")
-    fig1, ax1 = plt.subplots(figsize=(12, 5))
-    ax1.plot(df['Date'], df['Close'], label='Close Price')
-    ax1.set_xlabel("Date")
-    ax1.set_ylabel("Price (USD)")
-    ax1.grid(True)
-    ax1.legend()
-    st.pyplot(fig1)
+# --- Make Prediction ---
+def predict_future(data, n_days, model, look_back=60):
+    scaler = MinMaxScaler()
+    scaled_data = scaler.fit_transform(data.reshape(-1, 1))
 
-    st.markdown("## 📊 Price Distribution (Close)")
-    fig2, ax2 = plt.subplots(figsize=(8, 4))
-    sns.histplot(df['Close'], bins=50, kde=True, ax=ax2)
-    ax2.set_xlabel("Close Price")
-    st.pyplot(fig2)
+    last_sequence = scaled_data[-look_back:]
+    predictions = []
 
-    st.markdown("## 🔗 Correlation Matrix")
-    corr = df[['Open', 'High', 'Low', 'Close', 'Volume']].corr()
-    fig3, ax3 = plt.subplots(figsize=(6, 4))
-    sns.heatmap(corr, annot=True, cmap='coolwarm', linewidths=0.5, ax=ax3)
-    st.pyplot(fig3)
+    for _ in range(n_days):
+        input_data = np.array(last_sequence[-look_back:]).reshape(1, look_back, 1).astype(np.float32)
 
-    st.markdown("## 🟡 Moving Averages")
-    df['MA20'] = df['Close'].rolling(window=20).mean()
-    df['MA50'] = df['Close'].rolling(window=50).mean()
-    fig4, ax4 = plt.subplots(figsize=(12, 5))
-    ax4.plot(df['Date'], df['Close'], label='Close', alpha=0.5)
-    ax4.plot(df['Date'], df['MA20'], label='MA20', linestyle='--')
-    ax4.plot(df['Date'], df['MA50'], label='MA50', linestyle='--')
-    ax4.set_xlabel("Date")
-    ax4.set_ylabel("Price")
-    ax4.legend()
-    ax4.grid(True)
-    st.pyplot(fig4)
+        input_index = model.get_input_details()[0]['index']
+        output_index = model.get_output_details()[0]['index']
 
-    st.markdown("## 📦 Volume Over Time")
-    fig5, ax5 = plt.subplots(figsize=(12, 4))
-    ax5.plot(df['Date'], df['Volume'], color='orange')
-    ax5.set_xlabel("Date")
-    ax5.set_ylabel("Volume")
-    st.pyplot(fig5)
+        model.set_tensor(input_index, input_data)
+        model.invoke()
+        pred = model.get_tensor(output_index)[0][0]
 
-else:
-    st.info("👈 Silakan unggah file CSV untuk mulai eksplorasi.")
+        predictions.append(pred)
+        last_sequence = np.append(last_sequence, [[pred]], axis=0)
+
+    return scaler.inverse_transform(np.array(predictions).reshape(-1, 1)).flatten()
+
+# --- Streamlit UI ---
+st.title("📈 Prediksi Harga Saham Amazon (TFLite Model)")
+
+df = load_data()
+model = load_model()
+
+st.line_chart(df.set_index("Date")["Close"], use_container_width=True)
+
+n_days = st.number_input("Masukkan jumlah hari prediksi:", min_value=1, max_value=365, value=60)
+
+if st.button("Prediksi"):
+    close_data = df["Close"].values
+    future_preds = predict_future(close_data, n_days, model)
+
+    last_date = df["Date"].iloc[-1]
+    future_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=n_days)
+
+    pred_df = pd.DataFrame({"Date": future_dates, "Predicted Price": future_preds})
+    pred_df.set_index("Date", inplace=True)
+
+    st.line_chart(pred_df, use_container_width=True)
+    st.dataframe(pred_df)
+
